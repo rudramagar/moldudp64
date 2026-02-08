@@ -20,3 +20,11 @@ print("sent")
 PY
 ```
 
+Build in centos7 and higher version
+```sh
+# Rocky9
+make
+
+# CentOS7
+scl enable devtoolset-7 -- make
+```
