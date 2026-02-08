@@ -483,6 +483,22 @@ int Application::run() {
             continue;
         }
 
+        // Print End-of-seesion message
+        // 65535
+        if ((uint16_t)header.message_count == 0xFFFF) {
+            char sess10[11];
+            std::memset(sess10, ' ', 10);
+            size_t n = header.session.size();
+            if (n > 10) n = 10;
+            if (n) std::memcpy(sess10, header.session.data(), n);
+            sess10[10] = '\0';
+
+            std::printf(">> {'%.*s', %llu, %u}\n",
+                        10, sess10,
+                        (unsigned long long)header.sequence_number,65535u);
+            continue;
+        }
+
         // Gap/Duplicate/SessionChange
         if (enable_recovery) {
             check_sequence_gap(header, current_session, joined, expected_seq);
