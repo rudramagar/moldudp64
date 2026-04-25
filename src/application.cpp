@@ -1,5 +1,5 @@
 #include "application.h"
-#include "config.h"
+#include "yaml_config.h"
 #include "socket.h"
 #include "decoder.h"
 #include "recovery.h"
@@ -266,7 +266,7 @@ static uint64_t gap_fill(Rerequester& rr, const char session[10],
 }
 
 int Application::run() {
-    const char* config_path = "config/config.ini";
+    const char* config_path = "config/config.yaml";
     if (!load_config(config_path)) {
         std::printf("Failed to load config: %s\n", config_path);
         return 1;

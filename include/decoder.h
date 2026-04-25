@@ -3,7 +3,7 @@
 
 #include <cstdint>
 #include <string>
-#include "config.h"
+#include "yaml_config.h"
 
 struct MoldHeader {
     std::string session;

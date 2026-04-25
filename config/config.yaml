@@ -1,0 +1,12 @@
+itch_udp_settings:
+    spec: "specs/XrossingMD.json"
+    realtime:
+      next_sequence_number: 0
+      multicast_address: "272.0.0.1"
+      multicast_port: 12002
+      interface: "127.0.0.1"
+      source_address: "127.0.0.1"
+    recovery:
+      rerequester_address: "127.0.0.1"
+      rerequester_port: 12003
+      max_recovery_message_count: 5000
