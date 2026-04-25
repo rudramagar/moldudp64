@@ -68,9 +68,6 @@ static void check_sequence_gap(const MoldHeader& header,
     }
 
     if (header.session != current_session) {
-        std::printf(">> INFO: SESSION_CHANGE SequenceNum=%llu\n",
-                    (unsigned long long)header.sequence_number);
-
         current_session = header.session;
         expected_seq = header.sequence_number;
         return;
@@ -84,19 +81,9 @@ static void check_sequence_gap(const MoldHeader& header,
                     (unsigned long long)gap_count);
         return;
     }
-
-    if (header.sequence_number < expected_seq) {
-        std::printf(">> DUPLICATE: ExpectedSequence=%llu Received=%llu, Ignoring...\n",
-                    (unsigned long long)expected_seq,
-                    (unsigned long long)header.sequence_number);
-        return;
-    }
 }
 
-// Connect to multicast feed, read first valid Mold header
-// return session id for:
-// -s : get session for rerequest packet
-// -g : recovery mode
+// Read first valid MoldHeader and return SessionID for -s/-g 
 static bool get_session_id(const AppConfig& cfg, char session[10],
                            std::string& session_value) {
 
@@ -139,16 +126,7 @@ static bool get_session_id(const AppConfig& cfg, char session[10],
     }
 }
 
-// Purpose:
-// Wrapper to decode a full MoldUDP packet (header + payload (all messages))
-// Used mode:
-// - Live, replay(download) / live + recovery (-g)
-//
-// Funtions:
-// Calls parse_mold_header() to parse Mold header(session, startseq, msgcount)
-// Iterates each MoldMessage in the packet
-// Computes per-message seq = header.seqnum + msgcount
-// Calls decode_itch_message() for each message
+// Decode MoldUDP Packets
 static uint16_t decode_packet_messages(const uint8_t* buffer, int bytes,
                                       const AppConfig& cfg, bool has_type_filter,
                                       const bool type_allowed[256],
@@ -173,7 +151,6 @@ static uint16_t decode_packet_messages(const uint8_t* buffer, int bytes,
         uint64_t seq = header.sequence_number + (uint64_t)index;
         index++;
 
-        // Print filter by message type.
         bool allow_print = true;
         if (has_type_filter) {
             allow_print = type_allowed[(unsigned char)msg[0]];
@@ -186,8 +163,6 @@ static uint16_t decode_packet_messages(const uint8_t* buffer, int bytes,
         decoded_count++;
         processed++;
 
-        // Stop after N total messages
-        // on -n
         if (max_messages_limit != 0 && decoded_count >= max_messages_limit) {
             stop_now = true;
             return processed;
@@ -196,7 +171,7 @@ static uint16_t decode_packet_messages(const uint8_t* buffer, int bytes,
     return processed;
 }
 
-// Gap-fill (Recover)
+// Gap-fill
 static uint64_t gap_fill(Rerequester& rr, const char session[10],
                          uint64_t start_seq, uint64_t gap_count,
                          uint16_t max_per_request, const AppConfig& cfg,
@@ -219,10 +194,6 @@ static uint64_t gap_fill(Rerequester& rr, const char session[10],
         }
 
         if (!rr.send_request(session, current_seq, req_count)) {
-            std::printf("Recovery send_request failed seq=%llu count=%u\n",
-                        (unsigned long long)current_seq,
-                        (unsigned)req_count);
-
             break;
         }
 
@@ -235,12 +206,6 @@ static uint64_t gap_fill(Rerequester& rr, const char session[10],
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
                     timeouts++;
                     if (timeouts >= 3) {
-                        if (got_in_chunk == 0) {
-                            std::printf("Recovery timeout seq=%llu got=%llu req=%u\n",
-                                        (unsigned long long)current_seq,
-                                        (unsigned long long)got_in_chunk,
-                                        (unsigned)req_count);
-                        }
                         break;
                     }
                     continue;
@@ -318,7 +283,6 @@ static int decode_file(const std::string& file_path,
     uint64_t     packet_count    = 0;
  
     while (cursor < total_bytes) {
-        // Read 4-byte little-endian packet length prefix.
         if (cursor + 4 > total_bytes) {
             std::printf("Truncated length prefix at offset %zu\n", cursor);
             break;
@@ -377,7 +341,6 @@ static int decode_file(const std::string& file_path,
         }
  
         if (header.message_count == 0) {
-            // Heartbeat — no messages, nothing to decode.
             cursor += (size_t)packet_length;
             packet_count++;
             continue;
@@ -411,12 +374,7 @@ int Application::run() {
     }
 
     const AppConfig& cfg = config();
-    if (verbose) {
-        std::printf("verbose on\n");
-    }
 
-    // Decode local
-    // raw file
     if (!decode_file_path.empty()) {
         return decode_file(decode_file_path, cfg,
                            has_type_filter, type_allowed,
@@ -430,13 +388,10 @@ int Application::run() {
             return 1;
         }
 
-        // Get valid SessionId from first valid live Mold header
-        // To send the rerequest packet to.
         char session[10];
         std::string session_value;
 
         if (!get_session_id(cfg, session, session_value)) {
-            std::printf("Failed to get SessionID\n");
             return 1;
         }
 
@@ -455,10 +410,6 @@ int Application::run() {
             return 1;
         }
 
-        // Request reply
-        // in chunks
-        // configured in config with 
-        // max_recovery_message_count
         uint16_t max_per_request = cfg.max_recovery_message_count;
         if (max_per_request == 0) {
             max_per_request = 5000;
@@ -468,9 +419,10 @@ int Application::run() {
         uint64_t current_seq = start_seq;
 
         // If -n is provided => bounded download
-        // If -n is not provided => download all (until stalled / Ctrl+C)
+        // If -n is not provided => download all
         bool bounded_download = (max_messages != 0);
         uint64_t remaining = max_messages;
+        uint64_t total_received = 0;
 
         uint8_t rxbuf[udp_packet_capacity];
 
@@ -482,38 +434,22 @@ int Application::run() {
                             : (uint16_t)remaining;
             }
 
-            // Send rerequest for 
-            // [current_seq ... current_seq + req_count -1]
+            // Send rereq for current_seq+request_count-1
             if (!rr.send_request(session, current_seq, req_count)) {
-                std::printf(">> ERROR : Recovery Request Send  Failed Sequence=%llu, Count=%u\n",
-                            (unsigned long long)current_seq, (unsigned)req_count);
                 rr.close();
                 return 1;
             }
 
-            std::printf(">> INFO : Requesting... Sequence Number=%llu, Total Message=%u\n",
-                        (unsigned long long)current_seq, (unsigned)req_count);
-
-            // Receive reply packets
-            // until enough message decode
-            // for this chunk
+            // Receive enough reply packets to decode this chunk
             uint64_t got_in_chunk = 0;
             int timeouts = 0;
 
             while (got_in_chunk < (uint64_t)req_count) {
                 int n = rr.receive_packet(rxbuf, udp_packet_capacity);
                 if (n <= 0) {
-                    // Timeout is expected sometimes
-                    // allow a few then stop this chunk
                     if (errno == EAGAIN || errno == EWOULDBLOCK) {
                         timeouts++;
                         if (timeouts >= 3) {
-                            if (got_in_chunk == 0) {
-                                std::printf("Recovery timeout seq=%llu got=%llu req=%u\n",
-                                            (unsigned long long)current_seq,
-                                            (unsigned long long)got_in_chunk,
-                                            (unsigned)req_count);
-                            }
                             break;
                         }
                         continue;
@@ -529,7 +465,6 @@ int Application::run() {
                 got_in_chunk += (uint64_t)processed;
 
                 if (stop_now) {
-                    std::printf(">> STOP : Total Decoded Messages=%llu\n", (unsigned long long)decoded_count);
                     rr.close();
                     return 0;
                 }
@@ -537,20 +472,21 @@ int Application::run() {
 
             // If nothing arrived
             if (got_in_chunk == 0) {
-                std::printf("Recovery stalled seq=%llu req=%u\n",
-                            (unsigned long long)current_seq,
-                            (unsigned)req_count);
-
                 rr.close();
 
-                // Unbounded (-s without -n): treat stall as end of download (exit OK)
-                // Bounded (-s with -n): treat stall as failure (didn't get requested amount)
-                return bounded_download ? 1 : 0;
+                if (total_received > 0) {
+                    return 0;
+                }
+
+                // if unbound return 0
+                // if bounded and didn't get all (-s .. -n ..) exit 1
+                if (bounded_download) {
+                    return 1;
+                }
+                return 0;
             }
 
-            // Skip broken data 
-            // and move forward with 
-            // all valid messages (best-effort)
+            total_received += got_in_chunk;
             current_seq += got_in_chunk;
 
             if (bounded_download) {
@@ -562,15 +498,12 @@ int Application::run() {
             }
         }
 
-        std::printf("Recovery done decoded_count=%llu\n", (unsigned long long)decoded_count);
         rr.close();
         return 0;
     }
 
     // Live Mode
-
     Socket sock;
-
     if (!sock.connect_socket(cfg.mcast_ip, cfg.mcast_port, cfg.interface_ip, cfg.mcast_source_ip)) {
         std::printf("Failed to connect socket\n");
         return 1;
@@ -584,8 +517,6 @@ int Application::run() {
     uint64_t expected_seq = 0;
     uint64_t decoded_count = 0;
 
-    // Open rerequester 
-    // only if enable_recovery
     Rerequester rr;
     bool rr_open = false;
 
@@ -596,7 +527,6 @@ int Application::run() {
 
     if (enable_recovery) {
         if (cfg.mcast_rerequester_ip.empty() || cfg.mcast_rerequester_port == 0) {
-            std::printf("Error: rerequester IP/Port not set in the config\n");
             sock.close();
             return 1;
         }
@@ -613,10 +543,7 @@ int Application::run() {
         }
 
         rr_open = true;
-        std::printf("Recovery live mode enabled\n");
     }
-
-    std::printf("Listening... (Ctrl+C to stop)\n");
 
     while (1) {
         int bytes = sock.receive_bytes(buffer, buffer_capacity);
@@ -629,8 +556,7 @@ int Application::run() {
             continue;
         }
 
-        // Print End-of-seesion message
-        // 65535
+        // End Session 65535
         if ((uint16_t)header.message_count == 0xFFFF) {
             char sess10[11];
             std::memset(sess10, ' ', 10);
@@ -644,8 +570,7 @@ int Application::run() {
                         (unsigned long long)header.sequence_number,65535u);
             continue;
         }
-
-        // Gap/Duplicate/SessionChange
+ 
         if (enable_recovery) {
             check_sequence_gap(header, current_session, joined, expected_seq);
         }
@@ -658,8 +583,6 @@ int Application::run() {
             uint64_t gap_start = expected_seq;
             uint64_t gap_count = header.sequence_number - expected_seq;
 
-            // use sessionId from current
-            // live packet
             char session[10];
             std::memset(session, ' ', 10);
 
@@ -669,37 +592,34 @@ int Application::run() {
             }
 
             std::memcpy(session, header.session.data(), session_length);
-            std::printf(">> Start recovering ...\n");
 
             bool gap_stop_now = false;
-            uint64_t recovered_count = gap_fill(rr, session, gap_start, gap_count,
+            gap_fill(rr, session, gap_start, gap_count,
                 max_per_request, cfg,
                 has_type_filter, type_allowed,
                 decoded_count, max_messages,
                 gap_stop_now, verbose);
 
-            std::printf(">> RECOVERED: SequenceNumber=%llu, TotalRecovered=%llu\n",
-                        (unsigned long long)gap_start,
-                        (unsigned long long)recovered_count);
-
             if (gap_stop_now) {
-                std::printf(">> STOP: Total Decoded=%llu\n", (unsigned long long)decoded_count);
                 rr.close();
                 sock.close();
                 return 0;
             }
         }
 
-        // Decode the packet's message
+        // Skip Duplicate
+        if (joined && header.session == current_session &&
+            header.sequence_number < expected_seq) {
+            continue;
+        }
+
         bool stop_now = false;
         decode_packet_messages(buffer, bytes, cfg, has_type_filter, type_allowed,
                        decoded_count, max_messages, stop_now, verbose);
 
-        // Expected next packet startseq
         expected_seq = header.sequence_number + (uint64_t)header.message_count;
 
         if (stop_now) {
-            std::printf(">> STOP: Total Decoded=%llu\n", (unsigned long long)decoded_count);
             sock.close();
             return 0;
         }
