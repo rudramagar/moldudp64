@@ -16,7 +16,8 @@ Application::Application()
   has_type_filter(false),
   has_start_seq(false),
   start_seq(0),
-  enable_recovery(false) {
+  enable_recovery(false),
+  config_path("config/config.yaml") {
     std::memset(type_allowed, 0, sizeof(type_allowed));
 }
 
@@ -40,6 +41,12 @@ void Application::set_start_seq(uint64_t value) {
 
 void Application::set_enable_recovery(bool value) {
     enable_recovery = value;
+}
+
+void Application::set_config_path(const char* path) {
+    if (path != 0 && path[0] != '\0') {
+        config_path = path;
+    }
 }
 
 static void check_sequence_gap(const MoldHeader& header,
@@ -266,9 +273,8 @@ static uint64_t gap_fill(Rerequester& rr, const char session[10],
 }
 
 int Application::run() {
-    const char* config_path = "config/config.yaml";
-    if (!load_config(config_path)) {
-        std::printf("Failed to load config: %s\n", config_path);
+    if (!load_config(config_path.c_str())) {
+        std::printf("Failed to load config: %s\n", config_path.c_str());
         return 1;
     }
 

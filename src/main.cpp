@@ -10,6 +10,7 @@ static void usage(const char* prog) {
     std::fprintf(stderr,
             "Usage: %s [-g] [-s <seq>] [-n <count>] [-v] [--type <X> ...]\n\n"
             "Options:\n"
+            "   -c <config>     custom config path (default: config/config.yaml)\n"
             "   -g              gap-fill mode\n"
             "   -s <seq>        get data starting at <seq>\n"
             "   -n <count>      stops after decoding <count> msg\n"
@@ -41,7 +42,7 @@ int main(int argc, char** argv) {
     int opt;
     int long_index = 0;
 
-    while ((opt = getopt_long(argc, argv, "gs:n:vh", long_options, &long_index)) != -1) {
+    while ((opt = getopt_long(argc, argv, "c:gs:n:vh", long_options, &long_index)) != -1) {
         if (opt == 1000) {
             // --type
             if (!optarg || std::strlen(optarg) != 1) {
@@ -55,6 +56,10 @@ int main(int argc, char** argv) {
         }
 
         switch (opt) {
+            case 'c':
+                app.set_config_path(optarg);
+                break;
+
             case 'g':
                 enable_recovery = true;
                 break;

@@ -2,6 +2,7 @@
 #define APPLICATION_H
 
 #include <cstdint>
+#include <string>
 
 class Application {
 public:
@@ -12,6 +13,7 @@ public:
     void set_type_filter(char type);
     void set_start_seq(uint64_t value);
     void set_enable_recovery(bool value);
+    void set_config_path(const char* path);
 
     int run();
 
@@ -25,6 +27,8 @@ private:
     uint64_t start_seq;
 
     bool enable_recovery;
+
+    std::string config_path;
 };
 
 #endif
