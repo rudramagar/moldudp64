@@ -14,6 +14,7 @@ public:
     void set_start_seq(uint64_t value);
     void set_enable_recovery(bool value);
     void set_config_path(const char* path);
+    void set_decode_file(const char* path);
 
     int run();
 
@@ -29,6 +30,7 @@ private:
     bool enable_recovery;
 
     std::string config_path;
+    std::string decode_file_path;
 };
 
 #endif

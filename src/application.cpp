@@ -9,6 +9,7 @@
 #include <string>
 #include <cstring>
 #include <cerrno>
+#include <vector>
 
 Application::Application()
 : max_messages(0),
@@ -46,6 +47,12 @@ void Application::set_enable_recovery(bool value) {
 void Application::set_config_path(const char* path) {
     if (path != 0 && path[0] != '\0') {
         config_path = path;
+    }
+}
+
+void Application::set_decode_file(const char* path) {
+    if (path != 0 && path[0] != '\0') {
+        decode_file_path = path;
     }
 }
 
@@ -272,6 +279,131 @@ static uint64_t gap_fill(Rerequester& rr, const char session[10],
     return recovered;
 }
 
+// Decode raw file 
+static int decode_file(const std::string& file_path,
+                       const AppConfig& cfg,
+                       bool has_type_filter,
+                       const bool type_allowed[256],
+                       uint64_t max_messages,
+                       bool verbose) {
+ 
+    std::FILE* file = std::fopen(file_path.c_str(), "rb");
+    if (file == 0) {
+        std::printf("ERROR: Failed to open raw file: %s\n", file_path.c_str());
+        return 1;
+    }
+ 
+    std::fseek(file, 0, SEEK_END);
+    long file_size = std::ftell(file);
+    std::fseek(file, 0, SEEK_SET);
+    if (file_size <= 0) {
+        std::printf("INFO: Raw file is empty: %s\n", file_path.c_str());
+        std::fclose(file);
+        return 1;
+    }
+ 
+    std::vector<uint8_t> file_bytes((size_t)file_size);
+    size_t got = std::fread(&file_bytes[0], 1, (size_t)file_size, file);
+    std::fclose(file);
+    if (got != (size_t)file_size) {
+        std::printf("ERROR: Failed to read raw file fully: got %zu of %ld\n",
+                    got, file_size);
+        return 1;
+    }
+ 
+    const int    mold_header_len = 10 + 8 + 2;
+    const size_t total_bytes     = file_bytes.size();
+    size_t       cursor          = 0;
+    uint64_t     decoded_count   = 0;
+    uint64_t     packet_count    = 0;
+ 
+    while (cursor < total_bytes) {
+        // Read 4-byte little-endian packet length prefix.
+        if (cursor + 4 > total_bytes) {
+            std::printf("Truncated length prefix at offset %zu\n", cursor);
+            break;
+        }
+        uint32_t packet_length =
+              ((uint32_t)file_bytes[cursor + 0])
+            | ((uint32_t)file_bytes[cursor + 1] <<  8)
+            | ((uint32_t)file_bytes[cursor + 2] << 16)
+            | ((uint32_t)file_bytes[cursor + 3] << 24);
+        cursor += 4;
+ 
+        if (packet_length < (uint32_t)mold_header_len) {
+            std::printf("Packet too short at offset %zu: len=%u\n",
+                        cursor - 4, (unsigned)packet_length);
+            break;
+        }
+        if (cursor + (size_t)packet_length > total_bytes) {
+            std::printf("Truncated packet at offset %zu: need %u have %zu\n",
+                        cursor - 4, (unsigned)packet_length,
+                        total_bytes - cursor);
+            break;
+        }
+ 
+        const uint8_t* packet_start = &file_bytes[cursor];
+ 
+        MoldHeader header;
+        if (!parse_mold_header(packet_start, (int)packet_length, &header)) {
+            std::printf("Bad MoldUDP header at offset %zu\n", cursor);
+            break;
+        }
+ 
+        if (verbose) {
+            std::printf("[#PACKET %llu] Length=%u\n",
+                        (unsigned long long)(packet_count + 1),
+                        (unsigned)packet_length);
+        }
+ 
+        // EndSession
+        if ((uint16_t)header.message_count == 0xFFFF) {
+            char sess10[11];
+            std::memset(sess10, ' ', 10);
+            size_t n = header.session.size();
+            if (n > 10) {
+                n = 10;
+            }
+            if (n) {
+                std::memcpy(sess10, header.session.data(), n);
+            }
+            sess10[10] = '\0';
+            std::printf(">> {'%.*s', %llu, %u}\n",
+                        10, sess10,
+                        (unsigned long long)header.sequence_number, 65535u);
+            cursor += (size_t)packet_length;
+            packet_count++;
+            continue;
+        }
+ 
+        if (header.message_count == 0) {
+            // Heartbeat — no messages, nothing to decode.
+            cursor += (size_t)packet_length;
+            packet_count++;
+            continue;
+        }
+ 
+        // Full packet
+        bool stop_now = false;
+        decode_packet_messages(packet_start, (int)packet_length, cfg,
+                               has_type_filter, type_allowed,
+                               decoded_count, max_messages,
+                               stop_now, verbose);
+ 
+        cursor += (size_t)packet_length;
+        packet_count++;
+ 
+        if (stop_now) {
+            break;
+        }
+    }
+ 
+    std::printf(">> INFO: Total Packets=%llu Total Decoded=%llu\n",
+                (unsigned long long)packet_count,
+                (unsigned long long)decoded_count);
+    return 0;
+}
+
 int Application::run() {
     if (!load_config(config_path.c_str())) {
         std::printf("Failed to load config: %s\n", config_path.c_str());
@@ -281,6 +413,14 @@ int Application::run() {
     const AppConfig& cfg = config();
     if (verbose) {
         std::printf("verbose on\n");
+    }
+
+    // Decode local
+    // raw file
+    if (!decode_file_path.empty()) {
+        return decode_file(decode_file_path, cfg,
+                           has_type_filter, type_allowed,
+                           max_messages, verbose);
     }
 
     // Download mode -s <startseq>
